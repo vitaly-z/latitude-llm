@@ -36,6 +36,7 @@ type Monitor = {
   system: boolean
   target: MonitorTarget
   rule: MonitorRule
+  lastEvaluatedAt: Date | null
   mutedAt: Date | null
   deletedAt: Date | null
   createdAt: Date
@@ -161,6 +162,12 @@ Point rules use `MetricSeriesReader` directly:
 On the completion axis the query still bounds `start_time` by `MAX_EVALUABLE_RUN_MS` (24h) so ClickHouse keeps pruning partitions and using the `min_start_time` minmax index. That bound is also a ceiling: a run lasting longer than it is invisible to monitors.
 
 `firstEventAt` / `lastEventAt` report times on the same axis, which keeps a backdated `started_at` inside the window that produced it.
+
+### Window bounds
+
+`threshold` and `escalating` evaluate a fixed `SAVED_SEARCH_CURRENT_WINDOW_MS` window ending at `now`. They are level-triggered — each check re-reads current state — so a check that is delayed or dropped only delays the verdict, and the window width has to stay fixed because the configured threshold is calibrated for it.
+
+`match` is edge-triggered: a match seen by no window is lost, not deferred. It therefore evaluates `[lastEvaluatedAt, now)`, persisting the watermark on `monitors.last_evaluated_at` after each successful check, so consecutive windows abut instead of leaving the holes a fixed window opens whenever the leading-edge throttle drops a check. The resume point is floored at `MATCH_MAX_CATCHUP_MS` (1h) to bound the burst after an outage, and the watermark advances only on success — inside the same transaction as any incident it produced — so a failed check re-reads its interval rather than skipping it.
 
 Before reading ClickHouse, saved-search monitor targets resolve their current saved-search `filterSet` and `query`; if the saved search has been deleted, that monitor is skipped until the delete cascade removes it. Escalating rules adapt `MetricSeriesReader` into the incidents package's generic `SeriesReader` and then call `EscalationEngine`. The engine owns the sustained state machine, including seasonal expected-mode thresholds, entry snapshots, dwell exits, and hard timeouts. This is the same engine used for signal escalation; the reader decides which source produces the bucket series.
 
